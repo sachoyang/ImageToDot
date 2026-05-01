@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <gdiplus.h>
+#include <commctrl.h> // 탭 컨트롤을 위한 공용 컨트롤 헤더
 #include "PixelEngine.h"
 
 // UI 컨트롤 ID 정의
@@ -12,6 +13,16 @@
 #define IDC_COMBO_PALETTE 1006
 #define IDC_CHK_GRID 1007
 #define IDC_CHK_DITHERING 1008
+
+// --- 탭 및 Monopro 모드 컨트롤 ID ---
+#define IDC_TAB_MAIN       2000
+#define IDC_COMBO_M_PIXEL  2001
+#define IDC_COMBO_M_COLOR  2002
+#define IDC_COMBO_M_BLUR   2003
+#define IDC_BTN_M_APPLY    2004
+
+// 백그라운드 연산 완료를 알리는 커스텀 윈도우 메시지
+#define WM_PROCESS_COMPLETE (WM_APP + 1)
 
 class MainWindow
 {
@@ -38,6 +49,10 @@ private:
     void OnKeyDown(WPARAM key);
     void OnMouseMove(int mouseX, int mouseY);
 
+    // 탭 클릭 이벤트를 받을 Notify 함수와 UI 스위칭 함수
+    void OnNotify(LPARAM lParam);
+    void UpdateUIState();
+
     // UI 동작
     void OpenImageDialog();
     void SaveImageDialog();
@@ -54,10 +69,16 @@ private:
     HWND m_hBtnOpen, m_hBtnSave, m_hBtnColor, m_hComboRes;
     HWND m_hChkInterpolation, m_hComboPalette, m_hChkGrid, m_hChkDithering;
 
+    // --- Tab 및 Monopro UI 핸들 ---
+    HWND m_hTab;
+    HWND m_hComboMPixel, m_hComboMColor, m_hComboMBlur, m_hBtnMApply;
+    int m_currentTab; // 0: Retro, 1: Monopro
+
     // UI 및 에디터 상태
     Gdiplus::Color m_currentColor;
     COLORREF m_customColors[16];
     bool m_showGrid;
     bool m_isLMousePressed;
     bool m_isRMousePressed;
+    bool m_isProcessing; // 연산 중인지 체크하는 깃발
 };

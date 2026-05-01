@@ -138,8 +138,48 @@ void PixelEngine::ApplyPaletteToCanvas() {
     if (!m_pCanvasImg) return;
     if (m_pPixelatedImg) delete m_pPixelatedImg;
     m_pPixelatedImg = new Bitmap(m_targetRes, m_targetRes, PixelFormat32bppARGB);
-    Color pixelColor;
 
+    // [NEW] 4번(K-Means)이 선택되었을 때, 사진을 분석하여 8개의 동적 팔레트 추출
+    if (m_currentPaletteIndex == 4) {
+        int k = 8;
+        m_kMeansPalette.assign(k, Color(0, 0, 0, 0));
+
+        // 초기 중심값 설정 (대각선으로 색상을 랜덤하게 픽업)
+        for (int i = 0; i < k; ++i) {
+            int rx = (m_targetRes * i) / k;
+            m_pCanvasImg->GetPixel(rx, rx, &m_kMeansPalette[i]);
+        }
+
+        // K-Means 군집화 (10번 반복하여 정확한 대표색 도출)
+        for (int iter = 0; iter < 10; ++iter) {
+            std::vector<long> sumR(k, 0), sumG(k, 0), sumB(k, 0), counts(k, 0);
+
+            for (int y = 0; y < m_targetRes; ++y) {
+                for (int x = 0; x < m_targetRes; ++x) {
+                    Color c;
+                    m_pCanvasImg->GetPixel(x, y, &c);
+                    if (c.GetA() == 0) continue;
+
+                    int bestK = 0; long minDist = 2147483647;
+                    for (int i = 0; i < k; ++i) {
+                        long dR = c.GetR() - m_kMeansPalette[i].GetR();
+                        long dG = c.GetG() - m_kMeansPalette[i].GetG();
+                        long dB = c.GetB() - m_kMeansPalette[i].GetB();
+                        long dist = dR * dR + dG * dG + dB * dB;
+                        if (dist < minDist) { minDist = dist; bestK = i; }
+                    }
+                    sumR[bestK] += c.GetR(); sumG[bestK] += c.GetG(); sumB[bestK] += c.GetB();
+                    counts[bestK]++;
+                }
+            }
+            // 평균값으로 중심점 이동 (새로운 대표색 찾기)
+            for (int i = 0; i < k; ++i) {
+                if (counts[i] > 0) m_kMeansPalette[i] = Color(255, sumR[i] / counts[i], sumG[i] / counts[i], sumB[i] / counts[i]);
+            }
+        }
+    }
+
+    Color pixelColor;
     static const int bayer[4][4] = { {0,8,2,10}, {12,4,14,6}, {3,11,1,9}, {15,7,13,5} };
 
     for (int y = 0; y < m_targetRes; ++y) {
@@ -155,9 +195,7 @@ void PixelEngine::ApplyPaletteToCanvas() {
                 int r = pixelColor.GetR(), g = pixelColor.GetG(), b = pixelColor.GetB();
                 if (m_useDithering) {
                     int offset = (bayer[y % 4][x % 4] - 8) * 4;
-                    r = max(0, min(255, r + offset));
-                    g = max(0, min(255, g + offset));
-                    b = max(0, min(255, b + offset));
+                    r = max(0, min(255, r + offset)); g = max(0, min(255, g + offset)); b = max(0, min(255, b + offset));
                 }
                 Color ditheredColor(pixelColor.GetA(), r, g, b);
 
@@ -167,6 +205,9 @@ void PixelEngine::ApplyPaletteToCanvas() {
                 }
                 else if (m_currentPaletteIndex == 2) newColor = GetClosestColor(ditheredColor, g_palGameBoy, 4);
                 else if (m_currentPaletteIndex == 3) newColor = GetClosestColor(ditheredColor, g_palPico8, 16);
+
+                // [NEW] 방금 생성된 K-Means 8색 팔레트 적용!
+                else if (m_currentPaletteIndex == 4) newColor = GetClosestColor(ditheredColor, m_kMeansPalette.data(), m_kMeansPalette.size());
             }
             m_pPixelatedImg->SetPixel(x, y, newColor);
         }
@@ -191,7 +232,105 @@ void PixelEngine::DrawPixel(int gridX, int gridY, Color color, bool isEraser) {
             if (m_currentPaletteIndex == 1) mappedColor = (((r + g + b) / 3) > 127) ? Color(255, 255, 255, 255) : Color(255, 0, 0, 0);
             else if (m_currentPaletteIndex == 2) mappedColor = GetClosestColor(ditheredColor, g_palGameBoy, 4);
             else if (m_currentPaletteIndex == 3) mappedColor = GetClosestColor(ditheredColor, g_palPico8, 16);
+            else if (m_currentPaletteIndex == 4) mappedColor = GetClosestColor(ditheredColor, m_kMeansPalette.data(), m_kMeansPalette.size());
         }
         m_pPixelatedImg->SetPixel(gridX, gridY, mappedColor);
     }
+}
+
+// ==============================================================================
+// [NEW] OpenCV & Monopro 스타일 고급 알고리즘 구현부
+// ==============================================================================
+
+// 헬퍼 1: GDI+ Bitmap -> OpenCV Mat 변환
+cv::Mat PixelEngine::GdiplusBitmapToCvMat(Gdiplus::Bitmap* bmp) {
+    Gdiplus::Rect rect(0, 0, bmp->GetWidth(), bmp->GetHeight());
+    Gdiplus::BitmapData bmpData;
+    bmp->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bmpData);
+    cv::Mat mat(bmp->GetHeight(), bmp->GetWidth(), CV_8UC4, bmpData.Scan0, bmpData.Stride);
+    cv::Mat matCopy;
+    mat.copyTo(matCopy); // 깊은 복사 (메모리 충돌 방지)
+    bmp->UnlockBits(&bmpData);
+    return matCopy;
+}
+
+// 헬퍼 2: OpenCV Mat -> GDI+ Bitmap 변환 (메모리 충돌 완벽 해결 버전)
+Gdiplus::Bitmap* PixelEngine::CvMatToGdiplusBitmap(const cv::Mat& mat) {
+    cv::Mat bgra;
+    if (mat.channels() == 3) cv::cvtColor(mat, bgra, cv::COLOR_BGR2BGRA);
+    else bgra = mat;
+
+    // 1. GDI+의 꼼수(Lazy Copy)를 막기 위해 완전히 빈 도화지를 새로 만듭니다.
+    Gdiplus::Bitmap* bmp = new Gdiplus::Bitmap(bgra.cols, bgra.rows, PixelFormat32bppARGB);
+
+    Gdiplus::Rect rect(0, 0, bgra.cols, bgra.rows);
+    Gdiplus::BitmapData bmpData;
+
+    // 2. 도화지 메모리를 잠그고 쓰기 권한을 얻어옵니다.
+    bmp->LockBits(&rect, Gdiplus::ImageLockModeWrite, PixelFormat32bppARGB, &bmpData);
+
+    // 3. OpenCV의 픽셀 데이터를 GDI+ 메모리에 안전하게 직접 덮어씌웁니다.
+    for (int y = 0; y < bgra.rows; ++y) {
+        byte* dst = (byte*)bmpData.Scan0 + y * bmpData.Stride;
+        const byte* src = bgra.ptr<byte>(y);
+        memcpy(dst, src, bgra.cols * 4); // ARGB 4바이트(32bpp) 복사
+    }
+
+    // 4. 잠금 해제
+    bmp->UnlockBits(&bmpData);
+
+    // 이제 함수가 끝나고 OpenCV Mat이 소멸되더라도 절대 터지지 않습니다!
+    return bmp;
+}
+
+// 완성된 이미지만 조심스럽게 리턴합니다 (기존 ApplyMonoproStyle 교체)
+Gdiplus::Bitmap* PixelEngine::CreateMonoproImage(int pixelSize, int colorCount, int blurStrength) {
+    if (!m_pOriginalImg) return nullptr;
+
+    cv::Mat inputMat = GdiplusBitmapToCvMat(m_pOriginalImg);
+    cv::Mat bgrMat;
+    cv::cvtColor(inputMat, bgrMat, cv::COLOR_BGRA2BGR);
+
+    cv::Mat smallMat;
+    int newWidth = max(1, bgrMat.cols / pixelSize);
+    int newHeight = max(1, bgrMat.rows / pixelSize);
+    cv::resize(bgrMat, smallMat, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_LINEAR);
+
+    cv::Mat filteredMat;
+    cv::bilateralFilter(smallMat, filteredMat, 9, blurStrength, blurStrength);
+
+    cv::Mat data = filteredMat.reshape(1, filteredMat.total());
+    data.convertTo(data, CV_32F);
+
+    // K-Means 충돌 방지: 총 픽셀 수보다 요구하는 색상 수가 많으면 픽셀 수로 제한합니다.
+    int actualColorCount = std::min(colorCount, data.rows);
+
+    cv::Mat labels, centers;
+    // [MODIFIED] colorCount 대신 안전하게 actualColorCount를 넣습니다.
+    cv::kmeans(data, actualColorCount, labels,
+        cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 10, 1.0),
+        3, cv::KMEANS_PP_CENTERS, centers);
+
+    centers.convertTo(centers, CV_8U);
+    cv::Mat quantizedMat(filteredMat.size(), filteredMat.type());
+    for (int i = 0; i < filteredMat.rows; ++i) {
+        for (int j = 0; j < filteredMat.cols; ++j) {
+            int cluster_idx = labels.at<int>(i * filteredMat.cols + j, 0);
+            quantizedMat.at<cv::Vec3b>(i, j)[0] = centers.at<cv::Vec3b>(cluster_idx, 0)[0];
+            quantizedMat.at<cv::Vec3b>(i, j)[1] = centers.at<cv::Vec3b>(cluster_idx, 0)[1];
+            quantizedMat.at<cv::Vec3b>(i, j)[2] = centers.at<cv::Vec3b>(cluster_idx, 0)[2];
+        }
+    }
+
+    cv::Mat outputMat;
+    cv::resize(quantizedMat, outputMat, bgrMat.size(), 0, 0, cv::INTER_NEAREST);
+
+    // [핵심] 기존 캔버스를 지우지 않고 새 결과물만 던집니다! (충돌 원인 제거)
+    return CvMatToGdiplusBitmap(outputMat);
+}
+
+// 메인 UI 스레드가 안전하게 이미지를 갈아끼우는 함수
+void PixelEngine::SetPixelatedImage(Gdiplus::Bitmap* newImg) {
+    if (m_pPixelatedImg) delete m_pPixelatedImg;
+    m_pPixelatedImg = newImg;
 }

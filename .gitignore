@@ -1,0 +1,9 @@
+## [ Visual Studio 2022 C++ 전용 ]
+
+# Visual Studio 로컬 설정 및 캐시 (가장 용량이 큼)
+.vs/
+*.user
+*.suo
+*.vstreq
+*.vstsp
+*.vstman
